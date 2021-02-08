@@ -61,7 +61,7 @@ class QgModel:
     if (self.f_):
       S[:] += self.f_(i, sol, dt, t, grid)
     if (self.sgs_):
-      S[:] += self.sgs_.predict(self, sol, dt, t, grid)
+      S[:] += self.sgs_.predict(self, sol, grid)
 
     grid.dealias(S[:])
 
@@ -102,10 +102,11 @@ class QgModel:
     v = _p(vh)
     return q, p, u, v
 
-  def Jac(self, grid, a, b):
-    bx = _p(1j * grid.kr * b)
-    by = _p(1j * grid.ky * b)
-    return 1j * grid.kr * _s(_p(a) * by) - 1j * grid.ky * _s(_p(a) * bx)
+  def Jac(self, grid, ph, qh):
+    p = _p(ph)
+    qx = _p(1j * grid.kr * qh)
+    qy = _p(1j * grid.ky * qh)
+    return 1j * grid.kr * _s(p * qy) - 1j * grid.ky * _s(p * qx)
 
   def J(self, grid, qh):
     ph = -qh * grid.irsq
@@ -124,34 +125,33 @@ class QgModel:
 
     return 1j * grid.kr * uqh + 1j * grid.ky * vqh
 
-  def R(self, grid, width):
+  def R(self, grid, scale):
     qh = self.p_.sol
-    ph = -qh * self.g_.irsq
 
     # J(q, p)_
-    Jh_ = self.cutoff(width, grid, self.Jac(self.g_, qh, ph))
+    Jh_ = self.cutoff(grid, scale, self.J(self.g_, qh))
     # J(q_, p_)
-    J_h = self.Jac(grid, self.cutoff(width, grid, qh), self.cutoff(width, grid, ph))
+    J_h = self.J(grid, self.cutoff(grid, scale, qh))
     return J_h - Jh_
   
   # Filters
-  def cutoff(self, width, grid, y):
+  def cutoff(self, grid, scale, y):
     yh = y.clone()
-    return grid.reduce(self.g_.cutoff(width * self.g_.delta(), yh))
+    return grid.reduce(self.g_.cutoff(scale * self.g_.delta(), yh))
 
   def symm(self, y):
     y[:, 1:-1] *= 2.0
 
-  def cutoff_physical(self, width, grid, y):
+  def cutoff_physical(self, grid, scale, y):
     yh = _s(y)
-    yl = grid.reduce(self.g_.cutoff(width * self.g_.delta(), yh))
+    yl = grid.reduce(self.g_.cutoff(scale * self.g_.delta(), yh))
     yl = _p(yl)
     return yl
 
   def run(self, N, visit, update=False):
     for it in tqdm.tqdm(range(N)):
-      self.p_.step(self)
       visit(self, self.p_.cur, it)
+      self.p_.step(self)
     if update:
       return self.update()
 
@@ -162,18 +162,25 @@ class QgModel:
   def enstrophy(self, q):
     return 0.5 * torch.mean(q**2)
 
-  def fluxes(self, width, grid):
-    qh  = self.p_.sol
-    qh_ = self.cutoff(width, grid, qh)
+  def fluxes(self, grid, scale, qh):
+    if scale != 1:
+      qh = self.cutoff(grid, scale, qh)
 
-    s_ = -torch.imag(torch.conj(qh_) * self.J(grid, qh_))
-    self.symm(s_)
-    l_ =  torch.imag(torch.conj(qh_) * self.R(grid, width))
-    self.symm(l_)
+    s_ = -torch.conj(qh) * self.J(grid, qh)
+
+    if (self.sgs_):
+      r_ = self.sgs_.predict(self, qh, grid)
+    else:
+      r_ = self.R(grid, scale)
+
+    l_ = torch.conj(qh) * r_
+    
+    s_ = torch.real(s_)
+    l_ = torch.real(l_)
 
     K = torch.sqrt(grid.krsq)
     d = 0.5
-    k = torch.arange(1, grid.Nx // 2 - 1)
+    k = torch.arange(1, grid.Nx // 2)
     m = torch.zeros(k.size())
     A = torch.zeros(k.size())
 
@@ -204,7 +211,7 @@ class QgModel:
 
     K = torch.sqrt(self.g_.krsq)
     d = 0.5
-    k = torch.arange(1, self.g_.Nx // 2 - 1)
+    k = torch.arange(1, self.g_.Nx // 2)
     m = torch.zeros(k.size())
     A = torch.zeros(k.size())
     

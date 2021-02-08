@@ -73,7 +73,7 @@ class TwoGrid:
     y_r = y.size()
     z = torch.zeros([self.Ny, self.dk], dtype=torch.complex128, requires_grad=True).to(self.device)
     z[:int(self.Ny / 2), :self.dk] = y[:int(self.Ny / 2), :self.dk]
-    z[ int(self.Ny / 2 + 1):self.Ny, :self.dk] = y[y_r[0] - int(self.Ny / 2 - 1):y_r[0], :self.dk]
+    z[ int(self.Ny / 2):self.Ny, :self.dk] = y[y_r[0] - int(self.Ny / 2):y_r[0], :self.dk]
     return z
 
   # Apply de-aliasing

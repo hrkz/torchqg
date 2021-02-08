@@ -16,18 +16,18 @@ def workflow(
   name,
   iters, 
   steps,
-  delta,
+  scale,
   diags,
   qtes,
   sys,
   les,
-): 
+):
   store = int(iters / steps)
 
   Nx = sys.g_.Nx
   Ny = sys.g_.Ny
-  Nxl = int(Nx / delta)
-  Nyl = int(Ny / delta)
+  Nxl = int(Nx / scale)
+  Nyl = int(Ny / scale)
 
   sgs_grid = les[0].g_
 
@@ -59,14 +59,15 @@ def workflow(
         qts[qte][m.name].append(fn(m))
 
       # exact sgs
-      r = m.R(sgs_grid, delta)
+      r = m.R(sgs_grid, scale)
 
       dns[i, 0] = qg._p(r)
-      dns[i, 1] = m.cutoff_physical(delta, sgs_grid, q).view(1, Nyl, Nxl)
-      dns[i, 2] = m.cutoff_physical(delta, sgs_grid, p).view(1, Nyl, Nxl)
-      dns[i, 3] = m.cutoff_physical(delta, sgs_grid, u).view(1, Nyl, Nxl)
-      dns[i, 4] = m.cutoff_physical(delta, sgs_grid, v).view(1, Nyl, Nxl)
+      dns[i, 1] = m.cutoff_physical(sgs_grid, scale, q).view(1, Nyl, Nxl)
+      dns[i, 2] = m.cutoff_physical(sgs_grid, scale, p).view(1, Nyl, Nxl)
+      dns[i, 3] = m.cutoff_physical(sgs_grid, scale, u).view(1, Nyl, Nxl)
+      dns[i, 4] = m.cutoff_physical(sgs_grid, scale, v).view(1, Nyl, Nxl)
       hr_[i] = torch.stack((q, p, u, v))
+
       # step time
       time[i] = cur.t
     return None
@@ -85,8 +86,6 @@ def workflow(
         r = m.sgs_.predict(
           m, 
           m.p_.sol, 
-          cur.dt, 
-          cur.t, 
           m.g_
         )
         sgs[m.name][i, 0] = qg._p(r)
@@ -100,16 +99,17 @@ def workflow(
 
   with torch.no_grad():
     for it in tqdm.tqdm(range(iters)):
-      sys.p_.step(sys)
       run_hr(sys, sys.p_.cur, it)
+      sys.p_.step(sys)
       for m in les:
-        m.p_.step(m)
         run_lr(m, m.p_.cur, it)
+        m.p_.step(m)
 
     for diag in diags:
       diag(
         dir,
         name,
+        scale,
         time,
         qts,
         sys,
@@ -126,7 +126,7 @@ def workflow(
     #  'q_end.h5'
     #)
 
-def diag_show(dir, name, time, qts, sys, les, dns, hr, sgs, lr):
+def diag_show(dir, name, scale, time, qts, sys, les, dns, hr, sgs, lr):
   # Plotting
   cols = 1
   rows = 4
@@ -215,7 +215,7 @@ def mse(y, yhat, dim):
 def cor(y, yhat, dim):
   return torch.abs(y - yhat).mean(dim)
 
-def diag_sgs_metrics(dir, name, time, qts, sys, les, dns, hr, sgs, lr):
+def diag_sgs_metrics(dir, name, scale, time, qts, sys, les, dns, hr, sgs, lr):
   # Plotting
   m_fig, m_axs = plt.subplots(
     nrows=1,
@@ -264,7 +264,7 @@ def skewness(q, dim):
 def kurtosis(q, dim):
   return moment_order(q, 4, dim) / torch.pow(moment_order(q, 2, dim), 2.0) - 3.0
 
-def diag_spatial_stats(dir, name, time, qts, sys, les, dns, hr, sgs, lr):
+def diag_spatial_stats(dir, name, scale, time, qts, sys, les, dns, hr, sgs, lr):
   # Plotting
   m_fig, m_axs = plt.subplots(
     nrows=1,
@@ -309,7 +309,7 @@ def diag_spatial_stats(dir, name, time, qts, sys, les, dns, hr, sgs, lr):
   m_fig.savefig(dir + name + '/' + name + '_spatial_stats.pdf')
   plt.close(m_fig)
 
-def diag_temporal_stats(dir, name, time, qts, sys, les, dns, hr, sgs, lr):
+def diag_temporal_stats(dir, name, scale, time, qts, sys, les, dns, hr, sgs, lr):
   # Plotting
   cols = len(lr) + 2
   rows = 3
@@ -356,7 +356,7 @@ def diag_temporal_stats(dir, name, time, qts, sys, les, dns, hr, sgs, lr):
   m_fig.savefig(dir + name + '/' + name + '_temporal_stats.png')
   plt.close(m_fig)
 
-def diag_integrals(dir, name, time, qts, sys, les, dns, hr, sgs, lr):
+def diag_integrals(dir, name, scale, time, qts, sys, les, dns, hr, sgs, lr):
   m_fig, m_axs = plt.subplots(
     nrows=1,
     ncols=2,
@@ -404,7 +404,7 @@ def diag_integrals(dir, name, time, qts, sys, les, dns, hr, sgs, lr):
   m_fig.savefig(dir + name + '/' + name + '_integrals.pdf')
   plt.close(m_fig)
 
-def diag_spectra(dir, name, time, qts, sys, les, dns, hr, sgs, lr):
+def diag_spectrum(dir, name, scale, time, qts, sys, les, dns, hr, sgs, lr):
   m_fig, m_axs = plt.subplots(
     nrows=1,
     ncols=2,
@@ -415,16 +415,16 @@ def diag_spectra(dir, name, time, qts, sys, les, dns, hr, sgs, lr):
   k, ek, en = sys.spectrum()
 
   # Theory
-  m_axs[0].loglog(k[:-1], k[:-1].to(dtype=torch.float64)**(-3), label=r'$\sim k^{-3}$', linestyle='-.', color='k')
-  m_axs[1].loglog(k[:-1], k[:-1].to(dtype=torch.float64)**(-1), label=r'$\sim k^{-1}$', linestyle='-.', color='k')
+  m_axs[0].loglog(k, k.to(dtype=torch.float64)**(-3), label=r'$\sim k^{-3}$', linestyle='-.', color='k')
+  m_axs[1].loglog(k, k.to(dtype=torch.float64)**(-1), label=r'$\sim k^{-1}$', linestyle='-.', color='k')
   # DNS
-  m_axs[0].loglog(k[:-1], ek[:-1], label=r'$\mathcal{M}_{' + sys.name + '}$', linestyle='--')
-  m_axs[1].loglog(k[:-1], en[:-1], label=r'$\mathcal{M}_{' + sys.name + '}$', linestyle='--')
+  m_axs[0].loglog(k, ek, label=r'$\mathcal{M}_{' + sys.name + '}$', linestyle='--')
+  m_axs[1].loglog(k, en, label=r'$\mathcal{M}_{' + sys.name + '}$', linestyle='--')
   # LES
   for m in les:
     k, ek, en = m.spectrum()
-    m_axs[0].loglog(k[:-1], ek[:-1], label=r'$\mathcal{M}_{' + m.name + '}$')
-    m_axs[1].loglog(k[:-1], en[:-1], label=r'$\mathcal{M}_{' + m.name + '}$')
+    m_axs[0].loglog(k, ek, label=r'$\mathcal{M}_{' + m.name + '}$')
+    m_axs[1].loglog(k, en, label=r'$\mathcal{M}_{' + m.name + '}$')
 
   m_axs[0].grid()
   m_axs[0].set_xlabel(r'$k$', fontsize=20)
@@ -437,5 +437,61 @@ def diag_spectra(dir, name, time, qts, sys, les, dns, hr, sgs, lr):
   m_axs[1].set_ylim(bottom=1e-5)
   m_axs[1].legend(fontsize=15)
 
-  m_fig.savefig(dir + name + '/' + name + '_spectra.pdf')
+  m_fig.savefig(dir + name + '/' + name + '_spectrum.pdf')
+  plt.close(m_fig)
+
+def diag_fluxes(dir, name, scale, time, qts, sys, les, dns, hr, sgs, lr):
+  m_fig, m_axs = plt.subplots(
+    nrows=1,
+    ncols=3,
+    figsize=(15,5),
+    constrained_layout=True
+  )
+
+  samples = len(time)
+  sgs_grid = les[0].g_
+
+  q = hr[:, 0]
+  es_ = torch.zeros(samples, sgs_grid.Nx // 2 - 1)
+  el_ = torch.zeros(samples, sgs_grid.Nx // 2 - 1)
+  tz_ = torch.zeros(samples, sgs_grid.Nx // 2 - 1)
+
+  for i in range(samples):
+    k, es, el = sys.fluxes(sgs_grid, scale, qg._s(q[i]).to(sgs_grid.device))
+    es_[i] = es
+    el_[i] = el
+    tz_[i] = -torch.cumsum(es + el, dim=0)
+
+  # Projected DNS
+  m_axs[0].semilogx(k, es_.mean(dim=0), label=r'$\overline{\mathcal{M}_{' + sys.name + '}}$', linestyle='--')
+  m_axs[1].semilogx(k, el_.mean(dim=0), label=r'$\overline{\mathcal{M}_{' + sys.name + '}}$', linestyle='--')
+  m_axs[2].semilogx(k, tz_.mean(dim=0), label=r'$\overline{\mathcal{M}_{' + sys.name + '}}$', linestyle='--')
+  for m in les:
+    l = lr[m.name]
+    q = l[:, 0]
+    for i in range(samples): 
+      k, es, el = m.fluxes(m.g_, 1, qg._s(q[i]).to(sgs_grid.device))
+      es_[i] = es
+      el_[i] = el
+      tz_[i] = -torch.cumsum(es + el, dim=0)
+    
+    # LES
+    m_axs[0].semilogx(k, es_.mean(dim=0), label=r'$\mathcal{M}_{' + m.name + '}$')
+    m_axs[1].semilogx(k, el_.mean(dim=0), label=r'$\mathcal{M}_{' + m.name + '}$')
+    m_axs[2].semilogx(k, tz_.mean(dim=0), label=r'$\mathcal{M}_{' + m.name + '}$')
+
+  m_axs[0].grid()
+  m_axs[0].set_xlabel(r'$k$', fontsize=20)
+  m_axs[0].set_ylabel(r'$\langle T_{Z}(k) \rangle_{t}$', fontsize=20)
+  m_axs[0].legend(fontsize=15)
+  m_axs[1].grid()
+  m_axs[1].set_xlabel(r'$k$', fontsize=20)
+  m_axs[1].set_ylabel(r'$\langle T_{\bar{Z}}(k) \rangle_{t}$', fontsize=20)
+  m_axs[1].legend(fontsize=15)
+  m_axs[2].grid()
+  m_axs[2].set_xlabel(r'$k$', fontsize=20)
+  m_axs[2].set_ylabel(r'$\langle \Pi_{Z}(k) \rangle_{t}$', fontsize=20)
+  m_axs[2].legend(fontsize=15)
+
+  m_fig.savefig(dir + name + '/' + name + '_fluxes.pdf')
   plt.close(m_fig)

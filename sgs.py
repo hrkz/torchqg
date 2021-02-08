@@ -7,7 +7,7 @@ class Constant:
   def __init__(self, constant=0.0):
     self.constant = constant
 
-  def predict(self, m, sol, dt, t, grid):
+  def predict(self, m, sol, grid):
     div = torch.full_like(sol, self.constant)
     return div
 
@@ -15,7 +15,7 @@ class Leith:
   def __init__(self, c=1.0):
     self.c = c
 
-  def predict(self, m, sol, dt, t, grid):
+  def predict(self, m, sol, grid):
     qh = sol.clone()
     cte = (self.c * grid.delta())**3
     gh = grid.grad(qh)
@@ -31,7 +31,7 @@ class Smagorinsky:
   def __init__(self, c=0.5):
     self.c = c
 
-  def predict(self, m, sol, dt, t, grid):
+  def predict(self, m, sol, grid):
     qh = sol.clone()
     ph = -qh * grid.irsq
     cte = (self.c * grid.delta())**2
@@ -55,9 +55,11 @@ class Learned:
     self.model.eval()
     print(self.model)
 
-  def predict(self, m, sol, dt, t, grid):
+  def predict(self, m, sol, grid):
     q, p, u, v = m.update()
 
-    i = torch.stack((q, p, u, v), dim=0).unsqueeze(0)
-    r = self.model(i).view(128, 128)
+    i = p
+    i = (i - i.mean()) / i.std()
+    
+    r = self.model(i.unsqueeze(0).unsqueeze(0)).view(grid.Ny, grid.Nx)
     return qg._s(r)
