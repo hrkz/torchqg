@@ -34,3 +34,6 @@ class Pde:
   def step(self, m):
     self.stepper.step(m, self.sol, self.cur, self.eq, self.grid)
 
+  def reset(self):
+    self.cur.t = 0.0
+    self.cur.n = 0

@@ -22,7 +22,7 @@ def _s(y): return torch.fft. rfftn(y, norm='forward')
 def _p(y): return torch.fft.irfftn(y, norm='forward')
 
 class QgModel:
-  def __init__(self, name, Nx, Ny, Lx, Ly, dt, B, mu, nu, nv, eta, forcing=None, sgs=None):
+  def __init__(self, name, Nx, Ny, Lx, Ly, dt, B, mu, nu, nv, eta, forcing=None, filter=None, sgs=None):
     self.name = name
     
     self.B = B
@@ -38,7 +38,25 @@ class QgModel:
 
     self.p_ = Pde(dt=dt, eq=self.e_, stepper=self.s_)
     self.f_ = forcing
+    self.fil_ = filter
     self.sgs_ = sgs
+
+  def __str__(self):
+    return """Qg model
+       Grid: [{nx},{ny}] in [{lx},{ly}]
+       μ: {mu}
+       ν: {nu}
+       β: {beta}
+       dt: {dt}
+       """.format(
+      nx=self.g_.Nx, 
+      ny=self.g_.Ny, 
+      lx=self.g_.Lx,
+      ly=self.g_.Ly,
+      mu=self.mu,
+      nu=self.nu,
+      beta=self.B,
+      dt=self.p_.cur.dt)
 
   def qg_NL(self, i, S, sol, dt, t, grid):
     qh = sol.clone()
@@ -57,13 +75,21 @@ class QgModel:
     uqh = _s(uq)
     vqh = _s(vq)
     S[:] = -1j * grid.kr * uqh - 1j * grid.ky * vqh
-  
-    if (self.f_):
-      S[:] += self.f_(i, sol, dt, t, grid)
-    if (self.sgs_):
-      S[:] += self.sgs_.predict(self, sol, grid)
-
+ 
     grid.dealias(S[:])
+
+    if (self.f_):
+      S[:] += self.f_(
+        i, 
+        sol, 
+        dt, 
+        t, 
+        grid)
+    if (self.sgs_):
+      S[:] += self.sgs_.predict(
+        self, 
+        sol, 
+        grid)
 
   def qg_Lin(self, grid):
     Lc = -self.mu - self.nu * grid.krsq**self.nv + 1j * self.B * grid.kr * grid.irsq
@@ -102,12 +128,6 @@ class QgModel:
     v = _p(vh)
     return q, p, u, v
 
-  def Jac(self, grid, ph, qh):
-    p = _p(ph)
-    qx = _p(1j * grid.kr * qh)
-    qy = _p(1j * grid.ky * qh)
-    return 1j * grid.kr * _s(p * qy) - 1j * grid.ky * _s(p * qx)
-
   def J(self, grid, qh):
     ph = -qh * grid.irsq
     uh = -1j * grid.ky * ph
@@ -123,120 +143,125 @@ class QgModel:
     uqh = _s(uq)
     vqh = _s(vq)
 
-    return 1j * grid.kr * uqh + 1j * grid.ky * vqh
+    J = 1j * grid.kr * uqh + 1j * grid.ky * vqh
+    grid.dealias(J[:])
+    return J
 
   def R(self, grid, scale):
-    qh = self.p_.sol
-
-    # J(q, p)_
-    Jh_ = self.cutoff(grid, scale, self.J(self.g_, qh))
-    # J(q_, p_)
-    J_h = self.J(grid, self.cutoff(grid, scale, qh))
+    qh = self.p_.sol.clone()
+    # J(p, q)_
+    Jh_ = self.filter(
+      grid, 
+      scale, 
+      self.J(self.g_, qh))
+    #Jh_ = self.fil_(self.g_.delta() * scale, self.J(self.g_, qh))
+    # J(p_, q_)
+    J_h = self.J(
+      grid, 
+      self.filter(grid, scale, qh))
+    #J_h = self.J(self.g_, self.fil_(self.g_.delta() * scale, qh))
     return J_h - Jh_
-  
+
   # Filters
-  def cutoff(self, grid, scale, y):
+  def filter(self, grid, scale, y):
     yh = y.clone()
-    return grid.reduce(self.g_.cutoff(scale * self.g_.delta(), yh))
+    return grid.reduce(self.fil_(scale * self.g_.delta(), yh))
 
   def symm(self, y):
     y[:, 1:-1] *= 2.0
 
-  def cutoff_physical(self, grid, scale, y):
+  def filter_physical(self, grid, scale, y):
     yh = _s(y)
-    yl = grid.reduce(self.g_.cutoff(scale * self.g_.delta(), yh))
+    yl = grid.reduce(self.fil_(scale * self.g_.delta(), yh))
     yl = _p(yl)
     return yl
 
-  def run(self, N, visit, update=False):
-    for it in tqdm.tqdm(range(N)):
+  def run(self, iters, visit, update=False):
+    for it in tqdm.tqdm(range(iters)):
       visit(self, self.p_.cur, it)
       self.p_.step(self)
     if update:
       return self.update()
 
-  # Diagnostics (outside of the Model)
+  # Diagnostics
   def energy(self, u, v):
     return 0.5 * torch.mean(u**2 + v**2)
 
   def enstrophy(self, q):
     return 0.5 * torch.mean(q**2)
 
-  def fluxes(self, grid, scale, qh):
-    if scale != 1:
-      qh = self.cutoff(grid, scale, qh)
+  def cfl(self):
+    _, _, u, v = self.update()
+    return torch.stack((u, v), dim=0).abs().max() * self.p_.cur.dt / min(self.g_.dx, self.g_.dy)
 
-    s_ = -torch.conj(qh) * self.J(grid, qh)
+  def vrms(self):
+    _, _, u, v = self.update()
+    return torch.stack((u, v), dim=0).pow(2).mean().sqrt()
 
-    if (self.sgs_):
-      r_ = self.sgs_.predict(self, qh, grid)
-    else:
-      r_ = self.R(grid, scale)
+  def re(self, L=1):
+    return self.vrms() * min(self.g_.Lx, self.g_.Ly) / L / self.nu
 
-    l_ = torch.conj(qh) * r_
-    
-    s_ = torch.real(s_)
-    l_ = torch.real(l_)
+  def eddy_time(self, L=1):
+    e = 0.5 * self.g_.int_sq(self.p_.sol) / (self.g_.Lx * self.g_.Ly)
+    return min(self.g_.Lx, self.g_.Ly) / L * math.sqrt(1.0 / e)
 
-    K = torch.sqrt(grid.krsq)
-    d = 0.5
-    k = torch.arange(1, grid.Nx // 2)
-    m = torch.zeros(k.size())
-    A = torch.zeros(k.size())
-
-    es = torch.zeros(k.size())
-    el = torch.zeros(k.size())
-
-    for ik in range(len(k)):
-      n = k[ik]
-      i = torch.nonzero((K < (k[ik] + d)) & (K > (k[ik] - d)), as_tuple=True)
-      m[ik] = i[0].numel()
-      es[ik] = torch.sum(s_[i]) * k[ik] * math.pi / (m[ik] - d)
-      el[ik] = torch.sum(l_[i]) * k[ik] * math.pi / (m[ik] - d)
-
-    return k, es, el
-
-  def spectrum(self):
-    qh = self.p_.sol
-    ph = -qh * self.g_.irsq
-    uh = -1j * self.g_.ky * ph
-    vh =  1j * self.g_.kr * ph
-
-    u = _p(uh)
-    v = _p(vh)
-    kin = 0.5 * (torch.abs(uh)**2 + torch.abs(vh)**2)
-    self.symm(kin)
-    ens = 0.5 * (torch.abs(qh)**2)
-    self.symm(ens)
-
+  def spectrum(self, y):
     K = torch.sqrt(self.g_.krsq)
     d = 0.5
     k = torch.arange(1, self.g_.Nx // 2)
     m = torch.zeros(k.size())
     A = torch.zeros(k.size())
-    
-    ek = torch.zeros(k.size())
-    en = torch.zeros(k.size())
 
+    e = [torch.zeros(k.size()) for _ in range(len(y))]
     for ik in range(len(k)):
       n = k[ik]
       i = torch.nonzero((K < (n + d)) & (K > (n - d)), as_tuple=True)
       m[ik] = i[0].numel()
-      ek[ik] = torch.sum(kin[i]) * k[ik] * math.pi / (m[ik] - d)
-      en[ik] = torch.sum(ens[i]) * k[ik] * math.pi / (m[ik] - d)
+      for j, yj in enumerate(y):
+        e[j][ik] = torch.sum(yj[i]) * k[ik] * math.pi / (m[ik] - d)
+    return k, e
 
-    return k, ek, en
+  def invariants(self):
+    qh = self.p_.sol
+    ph = -qh * self.g_.irsq
+    uh = -1j * self.g_.ky * ph
+    vh =  1j * self.g_.kr * ph
+
+    # kinetic energy
+    e = 0.5 * (torch.abs(uh)**2 + torch.abs(vh)**2)
+    self.g_.dealias(e)
+    self.symm(e)
+
+    # enstrophy
+    z = 0.5 * (torch.abs(qh)**2)
+    self.symm(z)
+    self.g_.dealias(z)
+
+    k, [ek, zk] = self.spectrum([e, z])
+    return k, ek, zk
+
+  def fluxes(self, R, qh):
+    # resolved rate
+    sh = -torch.conj(qh) * self.J(self.g_, qh)
+    # modelled rate
+    lh = torch.conj(qh) * R
+
+    k, [sk, lk] = self.spectrum([torch.real(sh), torch.real(lh)])
+    return k, sk, lk
 
   # Data
   def save(self, name):
     hf = h5py.File(name, 'w')
-    hf.create_dataset('q', data=_p(self.p_.sol.cpu().detach()))
+    hf.create_dataset('q', data=_p(self.p_.sol).cpu().detach())
     hf.close()
 
   def load(self, name):
     hf = h5py.File(name, 'r')
     fq = hf.get('q')
-    self.p_.sol = _s(torch.from_numpy(fq[:]).to(device))
+    sq = _s(torch.from_numpy(fq[:]).to(device))
+
+    # Copy first wavenumbers
+    self.p_.sol = self.g_.increase(sq)
     hf.close()
 
   def zero_grad(self):
