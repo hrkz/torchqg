@@ -29,6 +29,34 @@ class ForwardEuler:
     sol += dt*self.S
     cur.step()
 
+class RungeKutta2:
+  def __init__(self, eq):
+    self.n = 2
+    self.S    = torch.zeros(eq.dim, dtype=torch.complex128, requires_grad=True).to(eq.device)
+    self.rhs1 = torch.zeros(eq.dim, dtype=torch.complex128, requires_grad=True).to(eq.device)
+    self.rhs2 = torch.zeros(eq.dim, dtype=torch.complex128, requires_grad=True).to(eq.device)
+
+  def zero_grad(self):
+    self.S.detach_()
+    self.rhs1.detach_()
+    self.rhs2.detach_()
+
+  def step(self, m, sol, cur, eq, grid):
+    dt = cur.dt
+    t  = cur.t
+
+    # substep 1
+    eq.NL(0, self.rhs1, sol, dt, t, grid)
+    self.rhs1 += eq.Lc*sol
+
+    # substep 2
+    self.S = sol + self.rhs1 * dt*0.5
+    eq.NL(1, self.rhs2, self.S, dt*0.5, t + dt*0.5, grid)
+    self.rhs2 += eq.Lc*self.S
+
+    sol += dt*self.rhs2
+    cur.step()
+
 class RungeKutta4:
   def __init__(self, eq):
     self.n    = 4
@@ -43,6 +71,7 @@ class RungeKutta4:
     self.rhs1.detach_()
     self.rhs2.detach_()
     self.rhs3.detach_()
+    self.rhs4.detach_()
 
   def step(self, m, sol, cur, eq, grid):
     dt = cur.dt

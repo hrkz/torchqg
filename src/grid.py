@@ -15,19 +15,19 @@ class TwoGrid:
 
     self.dx = Lx/Nx
     self.dy = Ly/Ny
-    self.x = torch.arange(start=-Lx/2, end=Lx/2, step=self.dx).to(device)
-    self.y = torch.arange(start=-Ly/2, end=Ly/2, step=self.dy).to(device)
+    self.x = torch.arange(start=-Lx/2, end=Lx/2, step=self.dx, dtype=torch.float64).to(device)
+    self.y = torch.arange(start=-Ly/2, end=Ly/2, step=self.dy, dtype=torch.float64).to(device)
 
     self.dk = int(Nx/2 + 1)
     self.kx = torch.reshape(torch.from_numpy(np.fft. fftfreq(Nx, Lx/(Nx*2*math.pi))), (1, self.Nx)).to(device)
     self.ky = torch.reshape(torch.from_numpy(np.fft. fftfreq(Ny, Ly/(Ny*2*math.pi))), (self.Ny, 1)).to(device)
     self.kr = torch.reshape(torch.from_numpy(np.fft.rfftfreq(Nx, Lx/(Nx*2*math.pi))), (1, self.dk)).to(device)
 
+    self.kcut = math.sqrt(2) * (1 - dealias) * min(self.ky.max(), self.kr.max())
+
     self.krsq = self.kr**2 + self.ky**2
     self.irsq = 1.0 / self.krsq
     self.irsq[0, 0] = 0.0
-
-    self.kcut = math.sqrt(2) * (1 - dealias) * min(self.ky.max(), self.kr.max())
 
   def grad(self, y):
     diffx = 1j * self.kr * y
@@ -67,7 +67,7 @@ class TwoGrid:
   # Apply cutoff filter on y
   def cutoff(self, delta, y):
     c = math.pi / delta
-    y[torch.sqrt(self.krsq) > c] = 0
+    y[torch.sqrt(self.krsq) >= c] = 0
     return y
 
   # Apply gaussian filter on y

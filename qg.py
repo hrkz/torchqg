@@ -10,7 +10,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 
 from src.grid import TwoGrid
-from src.explicit import ForwardEuler, RungeKutta4
+from src.timestepper import ForwardEuler, RungeKutta2, RungeKutta4
 from src.pde import Pde, Eq
 
 torch.autograd.set_detect_anomaly(True)
@@ -22,7 +22,7 @@ def _s(y): return torch.fft. rfftn(y, norm='forward')
 def _p(y): return torch.fft.irfftn(y, norm='forward')
 
 class QgModel:
-  def __init__(self, name, Nx, Ny, Lx, Ly, dt, B, mu, nu, nv, eta, forcing=None, filter=None, sgs=None):
+  def __init__(self, name, Nx, Ny, Lx, Ly, dt, t0, B, mu, nu, nv, eta, forcing=None, filter=None, sgs=None):
     self.name = name
     
     self.B = B
@@ -33,10 +33,16 @@ class QgModel:
     
     self.g_ = TwoGrid(device, Nx=Nx, Ny=Ny, Lx=Lx, Ly=Ly)
 
-    self.e_ = Eq(grid=self.g_, Lc=self.qg_Lin(self.g_), NL=self.qg_NL)
+    if sgs:
+      # use 3/2 rule
+      self.e_ = Eq(grid=self.g_, Lc=self.qg_Lin(self.g_), NL=self.qg_NL_les)
+      self.d_ = TwoGrid(device, Nx=int((3./2.)*Nx), Ny=int((3./2.)*Ny), Lx=Lx, Ly=Ly, dealias=1/3)
+    else:
+      # use 2/3 rule
+      self.e_ = Eq(grid=self.g_, Lc=self.qg_Lin(self.g_), NL=self.qg_NL_dns)
     self.s_ = RungeKutta4(eq=self.e_)
 
-    self.p_ = Pde(dt=dt, eq=self.e_, stepper=self.s_)
+    self.p_ = Pde(dt=dt, t0=t0, eq=self.e_, stepper=self.s_)
     self.f_ = forcing
     self.fil_ = filter
     self.sgs_ = sgs
@@ -58,7 +64,7 @@ class QgModel:
       beta=self.B,
       dt=self.p_.cur.dt)
 
-  def qg_NL(self, i, S, sol, dt, t, grid):
+  def qg_NL_dns(self, i, S, sol, dt, t, grid):
     qh = sol.clone()
     ph = -qh * grid.irsq
     uh = -1j * grid.ky * ph
@@ -75,8 +81,49 @@ class QgModel:
     uqh = _s(uq)
     vqh = _s(vq)
     S[:] = -1j * grid.kr * uqh - 1j * grid.ky * vqh
- 
+
     grid.dealias(S[:])
+
+    if (self.f_):
+      S[:] += self.f_(
+        i,
+        sol,
+        dt,
+        t,
+        grid)
+
+  def qg_NL_les(self, i, S, sol, dt, t, grid):
+    qh = sol.clone()
+    ph = -qh * grid.irsq
+    uh = -1j * grid.ky * ph
+    vh =  1j * grid.kr * ph
+
+    qhh = self.d_.increase(qh)
+    uhh = self.d_.increase(uh)
+    vhh = self.d_.increase(vh)
+
+    q = _p(qhh)
+    u = _p(uhh)
+    v = _p(vhh)
+
+    uq = u * q
+    vq = v * q
+
+    uqhh = _s(uq)
+    vqhh = _s(vq)
+
+    uqh = grid.reduce(uqhh)
+    vqh = grid.reduce(vqhh)
+
+    S[:] = -1j * grid.kr * uqh - 1j * grid.ky * vqh
+    #S[:] = self.fil_(self.g_.delta(), -1j * grid.kr * uqh - 1j * grid.ky * vqh)
+
+    if (self.sgs_):
+      S[:] += self.sgs_.predict(
+        self,
+        i,
+        sol,
+        grid)
 
     if (self.f_):
       S[:] += self.f_(
@@ -84,11 +131,6 @@ class QgModel:
         sol, 
         dt, 
         t, 
-        grid)
-    if (self.sgs_):
-      S[:] += self.sgs_.predict(
-        self, 
-        sol, 
         grid)
 
   def qg_Lin(self, grid):
@@ -105,7 +147,6 @@ class QgModel:
     qih[K < wavenumbers[0]] = 0.0
     qih[K > wavenumbers[1]] = 0.0
     qih[k == 0.0] = 0.0
-    qih[0, 0] = 0
 
     E0 = energy
     Ei = 0.5 * (self.g_.int_sq(self.g_.kr * self.g_.irsq * qih) + self.g_.int_sq(self.g_.ky * self.g_.irsq * qih)) / (self.g_.Lx * self.g_.Ly)
@@ -113,7 +154,7 @@ class QgModel:
     self.p_.sol = qih
     
   def update(self):
-    qh = self.p_.sol
+    qh = self.p_.sol.clone()
     ph = -qh * self.g_.irsq
     uh = -1j * self.g_.ky * ph
     vh =  1j * self.g_.kr * ph
@@ -144,31 +185,97 @@ class QgModel:
     vqh = _s(vq)
 
     J = 1j * grid.kr * uqh + 1j * grid.ky * vqh
-    grid.dealias(J[:])
     return J
 
   def R(self, grid, scale):
-    qh = self.p_.sol.clone()
-    # J(p, q)_
-    Jh_ = self.filter(
-      grid, 
-      scale, 
-      self.J(self.g_, qh))
-    #Jh_ = self.fil_(self.g_.delta() * scale, self.J(self.g_, qh))
-    # J(p_, q_)
-    J_h = self.J(
-      grid, 
-      self.filter(grid, scale, qh))
-    #J_h = self.J(self.g_, self.fil_(self.g_.delta() * scale, qh))
-    return J_h - Jh_
+    return self.R_field(grid, scale, self.p_.sol)
+
+  def R_field(self, grid, scale, yh):
+    return grid.div(torch.stack(self.R_flux(grid, scale, yh), dim=0))
+
+  def R_flux(self, grid, scale, yh):
+    qh = yh.clone()
+    ph = -qh * self.g_.irsq
+    uh = -1j * self.g_.ky * ph
+    vh =  1j * self.g_.kr * ph
+
+    q = _p(qh)
+    u = _p(uh)
+    v = _p(vh)
+
+    uq = u * q
+    vq = v * q
+
+    uqh = _s(uq)
+    vqh = _s(vq)
+
+    uqh_ = self.fil_(scale * self.g_.delta(), uqh)
+    vqh_ = self.fil_(scale * self.g_.delta(), vqh)
+    uh_  = self.fil_(scale * self.g_.delta(), uh)
+    vh_  = self.fil_(scale * self.g_.delta(), vh)
+    qh_  = self.fil_(scale * self.g_.delta(), qh)
+
+    u_ = _p(uh_)
+    v_ = _p(vh_)
+    q_ = _p(qh_)
+
+    u_q_ = u_ * q_
+    v_q_ = v_ * q_
+
+    u_q_h = _s(u_q_)
+    v_q_h = _s(v_q_)
+
+    tu = u_q_h - uqh_
+    tv = v_q_h - vqh_
+    return grid.reduce(tu), grid.reduce(tv)
+
+  def R_res(self, grid, scale, yh):
+    qh = yh.clone()
+    ph = -qh * self.g_.irsq
+    uh = -1j * self.g_.ky * ph
+    vh =  1j * self.g_.kr * ph
+
+    q = _p(qh)
+    u = _p(uh)
+    v = _p(vh)
+
+    uq = u * q
+    vq = v * q
+
+    uqh = _s(uq)
+    vqh = _s(vq)
+
+    uqh_ = self.filter(grid, scale, uqh)
+    vqh_ = self.filter(grid, scale, vqh)
+    uh_  = self.filter(grid, scale, uh)
+    vh_  = self.filter(grid, scale, vh)
+    qh_  = self.filter(grid, scale, qh)
+
+    uhh_ = self.d_.increase(uh_)
+    vhh_ = self.d_.increase(vh_)
+    qhh_ = self.d_.increase(qh_)
+
+    u_ = _p(uhh_)
+    v_ = _p(vhh_)
+    q_ = _p(qhh_)
+
+    u_q_ = u_ * q_
+    v_q_ = v_ * q_
+
+    u_q_hh = _s(u_q_)
+    v_q_hh = _s(v_q_)
+
+    u_q_h = grid.reduce(u_q_hh)
+    v_q_h = grid.reduce(v_q_hh)
+
+    tu = u_q_h - uqh_
+    tv = v_q_h - vqh_
+    return tu, tv
 
   # Filters
   def filter(self, grid, scale, y):
     yh = y.clone()
     return grid.reduce(self.fil_(scale * self.g_.delta(), yh))
-
-  def symm(self, y):
-    y[:, 1:-1] *= 2.0
 
   def filter_physical(self, grid, scale, y):
     yh = _s(y)
@@ -176,10 +283,11 @@ class QgModel:
     yl = _p(yl)
     return yl
 
-  def run(self, iters, visit, update=False):
-    for it in tqdm.tqdm(range(iters)):
-      visit(self, self.p_.cur, it)
+  def run(self, iters, visit, update=False, invisible=False):
+    for it in tqdm.tqdm(range(iters), disable=invisible):
+      #visit(self, self.p_.cur, it)
       self.p_.step(self)
+      visit(self, self.p_.cur, it)
     if update:
       return self.update()
 
@@ -210,7 +318,6 @@ class QgModel:
     d = 0.5
     k = torch.arange(1, self.g_.Nx // 2)
     m = torch.zeros(k.size())
-    A = torch.zeros(k.size())
 
     e = [torch.zeros(k.size()) for _ in range(len(y))]
     for ik in range(len(k)):
@@ -221,21 +328,20 @@ class QgModel:
         e[j][ik] = torch.sum(yj[i]) * k[ik] * math.pi / (m[ik] - d)
     return k, e
 
-  def invariants(self):
-    qh = self.p_.sol
+  def invariants(self, y):
+    #qh = self.p_.sol
+    qh = y.clone()
     ph = -qh * self.g_.irsq
     uh = -1j * self.g_.ky * ph
     vh =  1j * self.g_.kr * ph
 
     # kinetic energy
-    e = 0.5 * (torch.abs(uh)**2 + torch.abs(vh)**2)
-    self.g_.dealias(e)
-    self.symm(e)
+    e = torch.abs(uh)**2 + torch.abs(vh)**2
+    #self.g_.dealias(e)
 
     # enstrophy
-    z = 0.5 * (torch.abs(qh)**2)
-    self.symm(z)
-    self.g_.dealias(z)
+    z = torch.abs(qh)**2
+    #self.g_.dealias(z)
 
     k, [ek, zk] = self.spectrum([e, z])
     return k, ek, zk
@@ -243,8 +349,10 @@ class QgModel:
   def fluxes(self, R, qh):
     # resolved rate
     sh = -torch.conj(qh) * self.J(self.g_, qh)
-    # modelled rate
-    lh = torch.conj(qh) * R
+    #self.g_.dealias(sh)
+    # modeled rate
+    lh =  torch.conj(qh) * R
+    #self.g_.dealias(lh)
 
     k, [sk, lk] = self.spectrum([torch.real(sh), torch.real(lh)])
     return k, sk, lk
@@ -265,4 +373,5 @@ class QgModel:
     hf.close()
 
   def zero_grad(self):
+    #self.p_.sol.detach_()
     self.s_.zero_grad()
