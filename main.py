@@ -201,14 +201,6 @@ workflow.workflow(
   scale=scale,  # Kernel scale
   diags=[       # Diagnostics
     workflow.diag_show,
-    workflow.diag_sgs_metrics,
-    workflow.diag_spatial_stats,
-    workflow.diag_spatial_metrics,
-    workflow.diag_temporal_stats,
-    workflow.diag_integrals,
-    workflow.diag_spectra,
-    workflow.diag_transfers_spectral,
-    workflow.diag_transfers_physical,
   ],
   qtes={},
   sys=h,       # Dns system
