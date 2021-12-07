@@ -13,13 +13,13 @@ class Cursor:
     self.n += 1
 
 class Eq:
-  def __init__(self, grid, Lc, NL):
+  def __init__(self, grid, linear_term, nonlinear_term):
     self.device = grid.device
 
     self.grid = grid
-    self.Lc = Lc
-    self.NL = NL
-    self.dim = Lc.size()
+    self.linear_term = linear_term
+    self.nonlinear_term = nonlinear_term
+    self.dim = linear_term.size()
 
 class Pde:
   def __init__(self, dt, t0, eq, stepper):

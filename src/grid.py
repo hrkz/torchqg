@@ -40,6 +40,11 @@ class TwoGrid:
   def laplacian(self, y):
     return self.div(self.grad(y))
 
+  def curl(self, y):
+    dydx = 1j * self.kr * y[1]
+    dxdy = 1j * self.ky * y[0]
+    return dydx - dxdy
+
   def norm(self, y):
     return torch.linalg.norm(y, dim=0)
 
@@ -64,17 +69,17 @@ class TwoGrid:
     d = d**0.5
     return d
 
-  # Apply cutoff filter on y
+  # Apply cutoff filter on y.
   def cutoff(self, delta, y):
     c = math.pi / delta
     y[torch.sqrt(self.krsq) >= c] = 0
     return y
 
-  # Apply gaussian filter on y
+  # Apply gaussian filter on y.
   def gaussian(self, delta, y):
     return y * torch.exp(-delta**2 * self.krsq / 24)
 
-  # Discretize y on grid
+  # Discretize y on grid.
   def reduce(self, y):
     y_r = y.size()
     z = torch.zeros([self.Ny, self.dk], dtype=torch.complex128, requires_grad=True).to(self.device)
@@ -82,7 +87,7 @@ class TwoGrid:
     z[ int(self.Ny / 2):self.Ny, :self.dk] = y[y_r[0] - int(self.Ny / 2):y_r[0],           :self.dk]
     return z
 
-  # Discretize y on grid
+  # Discretize y on grid.
   def increase(self, y):
     y_r = y.size()
     z = torch.zeros([self.Ny, self.dk], dtype=torch.complex128, requires_grad=True).to(self.device)
@@ -90,7 +95,7 @@ class TwoGrid:
     z[self.Ny - int(y_r[0] / 2):self.Ny,         :y_r[1]] = y[ int(y_r[0] / 2):y_r[0], :y_r[1]]
     return z
 
-  # Apply de-aliasing (isotropic, homogeneous)
+  # Apply de-aliasing (isotropic, homogeneous).
   def dealias(self, y):
     y[torch.sqrt(self.krsq) > self.kcut] = 0
 
@@ -103,3 +108,4 @@ def aliased_wavenumbers(Nk, dk, dealias):
   p = (il, ir)
   r = (il, dk)
   return p, r
+

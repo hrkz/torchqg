@@ -1,31 +1,20 @@
 import math
 import torch
 
-def filter(K, order=4, inner=0.65, outer=1):
-  decay = 15.0 * math.log(10) / (outer - inner)**order
-  filt  = torch.exp(-decay * torch.pow(K - inner, order))
-  filt[K < inner] = 1.0
-  return filt
-
 class ForwardEuler:
   def __init__(self, eq):
     self.n = 1
     self.S = torch.zeros(eq.dim, dtype=torch.complex128, requires_grad=True).to(eq.device)
 
+  def zero_grad(self):
+    self.S.detach_()
+
   def step(self, m, sol, cur, eq, grid):
     dt = cur.dt
     t  = cur.t
 
-    eq.NL(
-      0,
-      self.S, 
-      sol,
-      dt, 
-      t, 
-      grid,
-    )
-
-    self.S += eq.Lc*sol.clone()
+    eq.nonlinear_term(0, self.S, sol, dt, t, grid)
+    self.S += eq.linear_term*sol.clone()
     sol += dt*self.S
     cur.step()
 
@@ -46,13 +35,13 @@ class RungeKutta2:
     t  = cur.t
 
     # substep 1
-    eq.NL(0, self.rhs1, sol, dt, t, grid)
-    self.rhs1 += eq.Lc*sol
+    eq.nonlinear_term(0, self.rhs1, sol, dt, t, grid)
+    self.rhs1 += eq.linear_term*sol
 
     # substep 2
     self.S = sol + self.rhs1 * dt*0.5
-    eq.NL(1, self.rhs2, self.S, dt*0.5, t + dt*0.5, grid)
-    self.rhs2 += eq.Lc*self.S
+    eq.nonlinear_term(1, self.rhs2, self.S, dt*0.5, t + dt*0.5, grid)
+    self.rhs2 += eq.linear_term*self.S
 
     sol += dt*self.rhs2
     cur.step()
@@ -78,23 +67,23 @@ class RungeKutta4:
     t  = cur.t
 
     # substep 1
-    eq.NL(0, self.rhs1, sol, dt, t, grid)
-    self.rhs1 += eq.Lc*sol
+    eq.nonlinear_term(0, self.rhs1, sol, dt, t, grid)
+    self.rhs1 += eq.linear_term*sol
 
     # substep 2
     self.S = sol + self.rhs1 * dt*0.5
-    eq.NL(1, self.rhs2, self.S, dt*0.5, t + dt*0.5, grid)
-    self.rhs2 += eq.Lc*self.S
+    eq.nonlinear_term(1, self.rhs2, self.S, dt*0.5, t + dt*0.5, grid)
+    self.rhs2 += eq.linear_term*self.S
 
     # substep 3
     self.S = sol + self.rhs2 * dt*0.5
-    eq.NL(2, self.rhs3, self.S, dt*0.5, t + dt*0.5, grid)
-    self.rhs3 += eq.Lc*self.S
+    eq.nonlinear_term(2, self.rhs3, self.S, dt*0.5, t + dt*0.5, grid)
+    self.rhs3 += eq.linear_term*self.S
 
     # substep 4
     self.S = sol + self.rhs3 * dt
-    eq.NL(3, self.rhs4, self.S, dt, t + dt, grid)
-    self.rhs4 += eq.Lc*self.S
+    eq.nonlinear_term(3, self.rhs4, self.S, dt, t + dt, grid)
+    self.rhs4 += eq.linear_term*self.S
 
     sol += dt*(self.rhs1/6.0 + self.rhs2/3.0 + self.rhs3/3.0 + self.rhs4/6.0)
     cur.step()
