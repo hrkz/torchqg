@@ -21,6 +21,17 @@ def to_physical(y): return torch.fft.irfftn(y, norm='forward')
 
 class QgModel:
   def __init__(self, name, Nx, Ny, Lx, Ly, dt, t0, B, mu, nu, nv, eta, source=None, kernel=None, sgs=None):
+    """
+    Notation: 
+    - q, $\omega$ is potential vorticity
+    - p, $\psi$ is streamfunction
+    - u, $u$ is x-axis velocity
+    - v, $v$ is y-axis velocity
+    - Variables in spectral space contain an h
+    - Spatially filtered variables contain an _
+
+    Args:
+    """
     self.name = name
     
     self.B = B
@@ -141,7 +152,7 @@ class QgModel:
     
   # Flow with random gaussian energy only in the wavenumbers range
   def init_randn(self, energy, wavenumbers):
-    K = torch.sqrt(self.grid.krsq)
+    K = torch.sqrt(self.grid.krsq) # Wavenumber of each point in frequency space
     k = self.grid.kr.repeat(self.grid.Ny, 1)
 
     qih = torch.randn(self.pde.sol.size(), dtype=torch.complex128).to(device)
@@ -155,7 +166,10 @@ class QgModel:
     self.pde.sol = qih
     
   def update(self):
-    qh = self.pde.sol.clone()
+    """
+    Calculates streamfunction and velocities from vorticity
+    """ 
+    qh = self.pde.sol.clone() # PDE solution only stores pot. vorticity
     ph = -qh * self.grid.irsq
     uh = -1j * self.grid.ky * ph
     vh =  1j * self.grid.kr * ph
@@ -189,40 +203,45 @@ class QgModel:
     return J
 
   def R(self, grid, scale):
+    """
+    R is the SGS parametrization
+    """
     return self.R_field(grid, scale, self.pde.sol)
 
   def R_field(self, grid, scale, yh):
+    """
+    See eq (17) in Frezat et al., 22
+    """
     return grid.div(torch.stack(self.R_flux(grid, scale, yh), dim=0))
 
   def R_flux(self, grid, scale, yh):
+    # Calc. streamfn and velocities from vorticity
     qh = yh.clone()
-    ph = -qh * self.grid.irsq
-    uh = -1j * self.grid.ky * ph
-    vh =  1j * self.grid.kr * ph
+    ph = -qh * self.grid.irsq # \psi = \nabla^2 \omega
+    uh = -1j * self.grid.ky * ph # u = -\partial_y \psi
+    vh =  1j * self.grid.kr * ph # v = \partial_x \psi
 
     q = to_physical(qh)
     u = to_physical(uh)
     v = to_physical(vh)
 
+    # Calc. \overline{\vec{u} \omega}
     uq = u * q
     vq = v * q
-
     uqh = to_spectral(uq)
     vqh = to_spectral(vq)
-
     uqh_ = self.kernel(scale * self.grid.delta(), uqh)
     vqh_ = self.kernel(scale * self.grid.delta(), vqh)
+
+    # Calc. \bar{\vec{u}} \bar\omega
     uh_  = self.kernel(scale * self.grid.delta(), uh)
     vh_  = self.kernel(scale * self.grid.delta(), vh)
     qh_  = self.kernel(scale * self.grid.delta(), qh)
-
     u_ = to_physical(uh_)
     v_ = to_physical(vh_)
     q_ = to_physical(qh_)
-
     u_q_ = u_ * q_
     v_q_ = v_ * q_
-
     u_q_h = to_spectral(u_q_)
     v_q_h = to_spectral(v_q_)
 
@@ -230,7 +249,7 @@ class QgModel:
     tv = v_q_h - vqh_
     return grid.reduce(tu), grid.reduce(tv)
 
-  # Filters
+  # Returns filtered spectral variable, y. 
   def filter(self, grid, scale, y):
     yh = y.clone()
     return grid.reduce(self.kernel(scale * self.grid.delta(), yh))
