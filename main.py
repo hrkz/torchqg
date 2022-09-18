@@ -9,7 +9,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 
 from qg import to_spectral, to_physical, QgModel
-from sgs import MLdiv, Constant
+from sgs import Constant # MLdiv
 
 import workflow
 
@@ -75,7 +75,6 @@ h.init_randn(0.01, [3.0, 5.0])
 h.kernel = h.grid.cutoff
 
 print(h)
-
 # Low res model(s).
 scale = 4
 
@@ -104,19 +103,19 @@ m1 = QgModel(
 
 # Initialize from DNS vorticity field.
 m1.pde.sol = h.filter(m1.grid, scale, h.pde.sol)
+print('LES Model: ', m1)
 
 # Will produce two images in folder `output` with the final fields after 2000 iterations.
 workflow.workflow(
   dir='output/',
   name='geo',
-  iters=10000,  # Model iterations
+  iters=100,# 10000,  # Model iterations
   steps=100,    # Discrete steps
   scale=scale,  # Kernel scale
   diags=[       # Diagnostics
     workflow.diag_fields,
   ],
   system=h,       # DNS system
-  models=[],
- #models=[m1]     # LES without model
+  # models=[],
+  models=[m1]     # LES without model
 )
-

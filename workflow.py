@@ -26,8 +26,12 @@ def workflow(
   models,
   dump=False,
 ):
+  """
+  Args:
+    steps int: Total number of steps that will be stored
+  """
   t0 = system.pde.cur.t
-  store_les = int(iters / steps)
+  store_les = int(iters / steps) # Data will be stored every <store_les> time steps
   store_dns = store_les * scale
 
   Nx = system.grid.Nx
@@ -38,15 +42,16 @@ def workflow(
   if models:
     sgs_grid = models[-1].grid
 
+  ## Init data loggers
   # Filtered DNS
   fdns = torch.zeros([steps, 5, Nyl, Nxl], dtype=torch.float64)
   # DNS
   dns  = torch.zeros([steps, 4, Ny,  Nx ], dtype=torch.float64)
-
   # LES
   les = {}
   for m in models:
     les[m.name] = torch.zeros([steps, 5, Nyl, Nxl], dtype=torch.float64)
+
   time = torch.zeros([steps])
 
   def visitor_dns(m, cur, it):
@@ -156,26 +161,34 @@ def diag_fields(dir, name, scale, time, system, models, dns, fdns, les):
 
   cols = len(models) + 1
   rows = 5
+  #rep = torch.repeat_interleave(torch.Tensor([rows]), cols)
+  #width_ratios = torch.cat((rep, torch.Tensor([0.1])))
+  width_ratios = np.append(np.repeat(rows, cols), 0.1)
   m_fig, m_axs = plt.subplots(
     nrows=rows,
     ncols=cols + 1,
     figsize=(cols * 2.5 + 0.5, rows * 2.5),
     constrained_layout=True,
-    gridspec_kw={"width_ratios": np.append(np.repeat(rows, cols), 0.1)}
+    gridspec_kw={"width_ratios": width_ratios} # np.append(np.repeat(rows, cols), 0.1)}
   )
+  # m_fig, m_axs = plt.subplots(nrows=rows,ncols=cols + 1,figsize=(cols * 2.5 + 0.5, rows * 2.5),constrained_layout=True,gridspec_kw={"width_ratios": width_ratios})
 
-  span_r = max(fdns[-1, 0].max(), abs(fdns[-1, 0].min()))
-  span_q = max(fdns[-1, 1].max(), abs(fdns[-1, 1].min()))
-  span_p = max(fdns[-1, 2].max(), abs(fdns[-1, 2].min()))
-  span_u = max(fdns[-1, 3].max(), abs(fdns[-1, 3].min()))
-  span_v = max(fdns[-1, 4].max(), abs(fdns[-1, 4].min()))
+  span_r = max(fdns[-1, 0].max(), abs(fdns[-1, 0].min())).cpu().detach().numpy()
+  span_q = max(fdns[-1, 1].max(), abs(fdns[-1, 1].min())).cpu().detach().numpy()
+  span_p = max(fdns[-1, 2].max(), abs(fdns[-1, 2].min())).cpu().detach().numpy()
+  span_u = max(fdns[-1, 3].max(), abs(fdns[-1, 3].min())).cpu().detach().numpy()
+  span_v = max(fdns[-1, 4].max(), abs(fdns[-1, 4].min())).cpu().detach().numpy()
 
   def plot_fields(i, label, grid, data):
-    c0 = m_axs[0, i].contourf(grid.x.cpu().detach(), grid.y.cpu().detach(), data[-1, 1], vmax=span_q, vmin=-span_q, cmap='bwr', levels=100)
-    c1 = m_axs[1, i].contourf(grid.x.cpu().detach(), grid.y.cpu().detach(), data[-1, 2], vmax=span_p, vmin=-span_p, cmap='bwr', levels=100)
-    c2 = m_axs[2, i].contourf(grid.x.cpu().detach(), grid.y.cpu().detach(), data[-1, 3], vmax=span_u, vmin=-span_u, cmap='bwr', levels=100)
-    c3 = m_axs[3, i].contourf(grid.x.cpu().detach(), grid.y.cpu().detach(), data[-1, 4], vmax=span_v, vmin=-span_v, cmap='bwr', levels=100)
-    c4 = m_axs[4, i].contourf(grid.x.cpu().detach(), grid.y.cpu().detach(), data[-1, 0], vmax=span_r, vmin=-span_r, cmap='bwr', levels=100)
+    x = grid.x.cpu().detach().numpy()
+    y = grid.y.cpu().detach().numpy()
+    data_np = data.cpu().detach().numpy()
+
+    c0 = m_axs[0, i].contourf(x, y, data_np[-1, 1], vmax=span_q, vmin=-span_q, cmap='bwr', levels=100)
+    c1 = m_axs[1, i].contourf(x, y, data_np[-1, 2], vmax=span_p, vmin=-span_p, cmap='bwr', levels=100)
+    c2 = m_axs[2, i].contourf(x, y, data_np[-1, 3], vmax=span_u, vmin=-span_u, cmap='bwr', levels=100)
+    c3 = m_axs[3, i].contourf(x, y, data_np[-1, 4], vmax=span_v, vmin=-span_v, cmap='bwr', levels=100)
+    c4 = m_axs[4, i].contourf(x, y, data_np[-1, 0], vmax=span_r, vmin=-span_r, cmap='bwr', levels=100)
     if i == 0:
       m_fig.colorbar(c0, cax=m_axs[0, cols])
       m_fig.colorbar(c1, cax=m_axs[1, cols])
@@ -183,7 +196,7 @@ def diag_fields(dir, name, scale, time, system, models, dns, fdns, les):
       m_fig.colorbar(c3, cax=m_axs[3, cols])
       m_fig.colorbar(c4, cax=m_axs[4, cols])
     m_axs[4, i].set_xlabel(label, fontsize=20)
-
+  
   # Projected DNS
   plot_fields(0, r'$\overline{\mathcal{M}' + system.name + '}$', models[-1].grid, fdns)
   # LES

@@ -19,14 +19,14 @@ class TwoGrid:
     self.y = torch.arange(start=-Ly/2, end=Ly/2, step=self.dy, dtype=torch.float64).to(device)
 
     self.dk = int(Nx/2 + 1)
-    self.kx = torch.reshape(torch.from_numpy(np.fft. fftfreq(Nx, Lx/(Nx*2*math.pi))), (1, self.Nx)).to(device)
-    self.ky = torch.reshape(torch.from_numpy(np.fft. fftfreq(Ny, Ly/(Ny*2*math.pi))), (self.Ny, 1)).to(device)
-    self.kr = torch.reshape(torch.from_numpy(np.fft.rfftfreq(Nx, Lx/(Nx*2*math.pi))), (1, self.dk)).to(device)
+    # self.kx = torch.reshape(torch.from_numpy(np.fft. fftfreq(Nx, Lx/(Nx*2*math.pi))), (1, self.Nx)).to(device)
+    self.ky = torch.reshape(torch.from_numpy(np.fft. fftfreq(Ny, Ly/(Ny*2*math.pi))), (self.Ny, 1)).to(device) # For derivates across y
+    self.kr = torch.reshape(torch.from_numpy(np.fft.rfftfreq(Nx, Lx/(Nx*2*math.pi))), (1, self.dk)).to(device) # For derivates across x
 
     self.kcut = math.sqrt(2) * (1 - dealias) * min(self.ky.max(), self.kr.max())
 
-    self.krsq = self.kr**2 + self.ky**2
-    self.irsq = 1.0 / self.krsq
+    self.krsq = self.kr**2 + self.ky**2 # 2nd order derivative
+    self.irsq = 1.0 / self.krsq # ??
     self.irsq[0, 0] = 0.0
 
   def grad(self, y):
@@ -83,8 +83,9 @@ class TwoGrid:
   def reduce(self, y):
     y_r = y.size()
     z = torch.zeros([self.Ny, self.dk], dtype=torch.complex128, requires_grad=True).to(self.device)
-    z[:int(self.Ny / 2),         :self.dk] = y[                         :int(self.Ny / 2), :self.dk]
-    z[ int(self.Ny / 2):self.Ny, :self.dk] = y[y_r[0] - int(self.Ny / 2):y_r[0],           :self.dk]
+    with torch.no_grad():
+      z[:int(self.Ny / 2),         :self.dk] = y[                         :int(self.Ny / 2), :self.dk]
+      z[ int(self.Ny / 2):self.Ny, :self.dk] = y[y_r[0] - int(self.Ny / 2):y_r[0],           :self.dk]
     return z
 
   # Discretize y on grid.
